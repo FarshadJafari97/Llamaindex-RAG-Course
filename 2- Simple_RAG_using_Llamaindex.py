@@ -1,10 +1,19 @@
 import os
-import numpy as np
-from google import genai
-from google.genai import types
-from sklearn.metrics.pairwise import cosine_similarity
+from llama_index.core import VectorStoreIndex, Document, Settings
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+from llama_index.llms.google_genai import GoogleGenAI
 from dotenv import load_dotenv
 load_dotenv()
+
+
+Settings.embed_model = GoogleGenAIEmbedding(model_name="gemini-embedding-2")
+Settings.llm = GoogleGenAI(model="gemini-3.5-flash-lite")
+
+sentence_splitter = SentenceSplitter(chunk_size=512, chunk_overlap=20)
+
+# We can pass sentence_splitter to Setting or directly to VectorStoreIndex.from_documents
+#Settings.node_parser = sentence_splitter
 
 texts = [
     "فتوسنتز فرآیندی است که در آن گیاهان، جلبک‌ها و برخی باکتری‌ها با استفاده از انرژی نور خورشید، دی‌اکسید کربن و آب را به گلوکز و اکسیژن تبدیل می‌کنند. این فرآیند در کلروپلاست‌ها و با کمک رنگدانه کلروفیل انجام می‌شود. فتوسنتز نقش کلیدی در تولید اکسیژن جو و تأمین انرژی اولیه زنجیره‌های غذایی دارد. بدون فتوسنتز، حیات بر روی زمین به شکلی که می‌شناسیم امکان‌پذیر نبود.",
@@ -19,116 +28,11 @@ texts = [
     "ورزش هوازی فعالیتی است که ضربان قلب و تنفس را برای مدت نسبتاً طولانی افزایش می‌دهد و عضلات بزرگ بدن را درگیر می‌کند. نمونه‌هایی از آن شامل دویدن، شنا، دوچرخه‌سواری و پیاده‌روی سریع است. این نوع ورزش به بهبود سلامت قلب و عروق، افزایش ظرفیت ریه، کنترل وزن، کاهش فشار خون و تقویت خلق‌وخو کمک می‌کند. توصیه عمومی آن است که بزرگسالان در هفته حداقل ۱۵۰ دقیقه فعالیت هوازی با شدت متوسط یا ۷۵ دقیقه با شدت شدید داشته باشند."
 ]
 
-class GeminiEmbedder:
-    def __init__(self, model="gemini-embedding-2", api_key=None):
-        self.client = genai.Client(api_key=api_key or os.environ["GEMINI_API_KEY"])
-        self.model = model
+documents = [Document(text=t) for t in texts]
 
-    def embed_documents(self, texts):
-        result = self.client.models.embed_content(
-            model=self.model,
-            contents=[types.Content(parts=[types.Part(text=t)]) for t in texts],
-            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
-        )
-        return [e.values for e in result.embeddings]
+index = VectorStoreIndex.from_documents(documents, transformations=[sentence_splitter])
+query_engine = index.as_query_engine(similarity_top_k=3)
 
-    def embed_query(self, text):
-        result = self.client.models.embed_content(
-            model=self.model,
-            contents=[text],
-            config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
-        )
-        return result.embeddings[0].values
-
-
-class SimpleVectorStore:
-    def __init__(self):
-        self.chunks = []
-        self.vectors = []
-
-    def add(self, chunks, vectors):
-        self.chunks.extend(chunks)
-        self.vectors.extend(vectors)
-
-    def search(self, query_vector, top_k=3):
-        if not self.vectors:
-            return []
-        matrix = np.array(self.vectors)
-        q = np.array(query_vector).reshape(1, -1)
-        scores = cosine_similarity(q, matrix)[0]
-        ranked = sorted(
-            zip(self.chunks, scores), key=lambda x: x[1], reverse=True
-        )
-        return ranked[:top_k]
-
-
-class RAG:
-    def __init__(self, embedder, llm_fn):
-        self.embedder = embedder
-        self.llm_fn = llm_fn
-        self.store = SimpleVectorStore()
-
-    def index(self, documents):
-        vectors = self.embedder.embed_documents(documents)
-        self.store.add(documents, vectors)
-
-    def _build_prompt(self, question, retrieved):
-        context = "\n\n".join(
-            f"[منبع {i+1} | امتیاز {score:.3f}]\n{chunk}"
-            for i, (chunk, score) in enumerate(retrieved)
-        )
-        return f"""فقط بر اساس متن‌های زیر پاسخ بده.
-        اگر پاسخ در متن‌ها نبود، صریحاً بگو: "بر اساس اسناد ارائه‌شده نمی‌دانم."
-
-        متن‌ها:
-        {context}
-
-        پرسش: {question}
-
-        پاسخ:"""
-
-    def query(self, question, top_k=3, score_threshold=None):
-        q_vec = self.embedder.embed_query(question)
-        retrieved = self.store.search(q_vec, top_k=top_k)
-
-        if score_threshold is not None and (
-            not retrieved or retrieved[0][1] < score_threshold
-        ):
-            return {
-                "answer": "بر اساس اسناد ارائه‌شده نمی‌دانم.",
-                "sources": retrieved,
-                "reason": f"best_score={retrieved[0][1]:.3f} < threshold={score_threshold}"
-                if retrieved else "no results",
-            }
-
-        prompt = self._build_prompt(question, retrieved)
-        answer = self.llm_fn(prompt)
-        return {"answer": answer, "sources": retrieved}
-
-
-def make_llm_fn(client, model="gemma-4-26b-a4b-it"):
-    def llm_fn(prompt):
-        resp = client.models.generate_content(model=model, contents=prompt)
-        return resp.candidates[0].content.parts[0].text
-    return llm_fn
-
-
-# --- usage ---
-if __name__ == "__main__":
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    embedder = GeminiEmbedder(api_key=os.environ["GEMINI_API_KEY"])
-    rag = RAG(embedder=embedder, llm_fn=make_llm_fn(client))
-
-    rag.index(texts)
-
-    for q in [
-        "تغییرات اقلیمی چه پیامدهایی دارد؟",
-        "پایتخت فرانسه کجاست؟",
-        "فتوسنتز در کدام اندامک انجام می‌شود؟",
-    ]:
-        result = rag.query(q, top_k=3, score_threshold=0.5)
-        print("=" * 60)
-        print(f"Q: {q}")
-        print(f"A: {result['answer']}")
-        for chunk, score in result["sources"]:
-            print(f"  [{score:.3f}] {chunk[:60]}...")
+response = query_engine.query("تغییرات اقلیمی چه پیامدهایی دارد؟")
+print(response)
+print(response.source_nodes)
