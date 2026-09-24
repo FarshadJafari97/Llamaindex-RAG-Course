@@ -1,0 +1,13 @@
+{
+  "company": "Northstar Learning",
+  "faq": [
+    {
+      "question": "What is the knowledge assistant?",
+      "answer": "It searches approved internal documents and answers questions using retrieved context."
+    },
+    {
+      "question": "How often is the index updated?",
+      "answer": "In this sample project, the index can be rebuilt whenever the source folder changes."
+    }
+  ]
+}

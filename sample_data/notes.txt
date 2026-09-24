@@ -1,0 +1,5 @@
+LlamaIndex is a framework for building data-connected applications powered by large language models.
+It provides readers for loading documents, node parsers for splitting text, vector indexes for retrieval, and query engines for answering questions.
+
+This sample folder is designed to demonstrate loading many files at once with SimpleDirectoryReader.
+The fictional company Northstar Learning uses an internal knowledge assistant to help employees find information.
